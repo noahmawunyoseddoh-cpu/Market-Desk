@@ -26,12 +26,12 @@ Returns create immutable credit notes attached to the original invoice. Refund a
 Cloud snapshots are saved in R2 after successful changes, with retries during foreground sync if backup storage fails. **Recovery & history** lists the latest 50 snapshots, manual backup/download/restore controls and the latest 200 audit events. A restore makes a safety snapshot first, rejects intervening writes, changes records atomically and preserves audit history. Old operation IDs remain retired so delayed retries cannot recreate records removed by restoration. Product photos remain in the same shop’s R2 storage: downloaded JSON contains photo links, not photo binaries. Restoring is for this shop’s cloud snapshots, not importing arbitrary JSON into another account.
 
 ## Current scope
-Multi-business access with owner, manager and cashier memberships is enabled. Reports query all matching saved sales; the invoice and purchase lists show the latest 500. Reports keep currencies separate and show refunds on their actual refund dates. Purchase costs, expenses, profit calculations, taxes and payment-provider settlement are outside this version. Legacy sales that did not deduct stock are not deducted retrospectively.
+Multi-business access with per-person custom permissions is enabled — each staff member is granted an exact set of abilities (sales, products, purchases, refunds, reports, payments, settings, recovery, staff management) rather than being locked into a fixed role; owners can change anyone's access at any time. Reports query all matching saved sales; the invoice and purchase lists show the latest 500. Reports keep currencies separate and show refunds on their actual refund dates. Purchase costs, expenses, profit calculations, taxes and payment-provider settlement are outside this version. Legacy sales that did not deduct stock are not deducted retrospectively.
 
-The hosted app uses email/password sign-in and Cloudflare D1/R2 storage. Do not expose D1/R2 credentials or the Worker's bindings publicly. Sample records in automated tests are isolated from the hosted shop.
+The hosted app uses email/password sign-in with email verification, password reset and rate limiting, plus Cloudflare D1/R2 storage. Do not expose D1/R2 credentials or the Worker's bindings publicly. Sample records in automated tests are isolated from the hosted shop.
 
 ## Development
-Preserve the project's pnpm lockfile. The database schema lives in db/schema.ts; generated migrations live in drizzle/. Bindings (`DB`, `BUCKET`) are declared in wrangler.toml. Production migration changes are append-only after publication. See `DEPLOY.md` for the full setup and deploy walkthrough.
+Preserve the project's pnpm lockfile. The database schema lives in db/schema.ts; generated migrations live in drizzle/. Bindings (`DB`, `BUCKET`) and mail settings (`MAIL_FROM`, `APP_URL`) are declared in wrangler.toml; the `RESEND_API_KEY` used to send invite, verification and password-reset emails is stored as a Worker secret (`wrangler secret put RESEND_API_KEY`), never committed. Production migration changes are append-only after publication. See `DEPLOY.md` for the full setup and deploy walkthrough.
 
 ## Validation
 Run `pnpm test`, `pnpm exec tsc --noEmit`, then the Sites production build. Tests execute the actual route handlers against transactional SQLite and an R2 adapter. Coverage includes migrations, exact GHS/XOF amounts, legacy invoices, report totals beyond 500 sales, stock races, lost responses, stale edits, purchase retries, payment reconciliation, partial refunds, cancellations, restore rollback, cross-account rejection and retired operation IDs.
@@ -47,14 +47,23 @@ Before your first market day, test the following with your real products on your
 
 Browser storage eviction, a lost device before sync and device-specific PDF sharing need real-device validation; no software test can replace that check. Pending offline sales must sync before switching or creating another business, preventing a device from stranding unsynced transactions under the wrong workspace.
 
+## Account security
+Sign-up requires a password (minimum 8 characters, entered twice) and sends a verification email via Resend. The account works immediately after sign-up, but verification is required before a pending staff invite can activate for that email — this stops someone from claiming a colleague's invite by signing up with their email before they do. Accounts that miss or lose the verification link can request a new one from a banner shown while signed in and unverified.
+
+**Forgot password** on the sign-in screen emails a reset link (2-hour expiry) that lets someone set a new password; using it signs the account out on every device for safety.
+
+**Rate limiting** is applied to sign-in (8 attempts per 15 minutes per email, 30 per 15 minutes per IP), sign-up (5 per hour per IP), forgot-password (3 per hour per email, 10 per hour per IP), password reset (15 per hour per IP), staff invites (20 per hour per business and per IP) and account deletion (5 per hour per IP), backed by a lightweight table in D1. This needs no extra Cloudflare setup beyond the D1 database already used for everything else.
+
 ## Multi-business staff access
 
-This source includes migration `drizzle/0005_business_memberships.sql`.
+This source includes migrations through `drizzle/0010_rate_limits.sql`.
 Existing shops are preserved: on the first signed-in request after migration, the existing user ID becomes that shop's business ID and an owner membership is created without moving or deleting products, sales, purchases, settings, backups, or stock.
 
-Roles:
-- Owner: full shop, recovery, settings, and staff access.
-- Manager: sales, products, purchases, reports, payments, refunds, and cashier management.
-- Cashier: checkout/read access only.
+Access is fully custom per person rather than fixed roles. Every staff member (except owners, who always have full access) is granted an exact combination of: sales, product management, purchases, refunds/cancellations, reports, payments, shop settings, recovery & history, and inviting/managing other staff. Owners set this per person at invite time and can change it at any time from **Staff & businesses**. A business must always keep at least one owner, and nobody can grant a permission — or owner access — that they don't already hold themselves.
 
-Staff invitations are email-based. Invite the exact email the employee uses to sign in (they'll create their account, or sign in, with that email). The pending membership becomes active automatically on their next sign-in. A user can belong to multiple businesses and switch the active business under **Staff & businesses**.
+Staff invitations are email-based and send a real email via Resend with the access being granted. Invite the exact email the employee uses to sign in (they'll create their account, or sign in, with that email). The pending membership becomes active automatically once that email is verified and they next sign in. A user can belong to multiple businesses and switch the active business under **Staff & businesses**.
+
+## Account deletion
+Any signed-in user can permanently delete their own account from a "Danger zone" section on **Staff & businesses**. It requires picking a reason from a short list (kept afterward, by email, in `account_deletion_feedback` for the shop owner or developer to review — not shown anywhere in the app itself), re-entering the current password, and typing `DELETE` to confirm.
+
+If the account is the *sole* owner of a business, that business and all of its data — products, sales, purchases, adjustments, backups, audit history and R2 photos — is permanently deleted along with it, since no one would be left to run it. If another active owner exists, or the account is only staff, just that person's membership is removed and the business is untouched. This distinction is enforced server-side regardless of what the confirmation UI shows.
