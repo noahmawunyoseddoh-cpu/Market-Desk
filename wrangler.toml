@@ -1,0 +1,20 @@
+name = "marketdesk"
+main = "vinext/server/fetch-handler"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+MAIL_FROM = "MarketDesk <invites@app.marketstand.online>"
+APP_URL = "https://app.marketstand.online"
+
+# Created with: wrangler d1 create marketdesk-db
+[[d1_databases]]
+binding = "DB"
+database_name = "marketdesk-db"
+database_id = "2cca77db-87a0-4b8d-9344-056528f4a07c"
+migrations_dir = "drizzle"
+
+# Created with: wrangler r2 bucket create marketdesk-photos
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "marketdesk-photos"
